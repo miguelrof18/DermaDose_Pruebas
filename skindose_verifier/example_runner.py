@@ -69,6 +69,10 @@ def prepare_example(folder, *, config=None, rdsr=None, mesh=None,
             except (ValueError, OSError):
                 if config and path.resolve() == local(config).resolve():
                     raise
+    if config is not None:
+        explicit = local(config).resolve()
+        if explicit not in configs and explicit.is_file():
+            configs.append(explicit)
     config_path = choose(configs, 'configuración de equipo', local(config), interactive, input_fn)
     data = deepcopy(read_json(config_path))
     dicom = choose([p for p in entries if p.suffix.lower()=='.dcm'], 'RDSR (.dcm)', local(rdsr), interactive, input_fn)
