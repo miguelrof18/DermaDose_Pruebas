@@ -30,8 +30,32 @@ SPECIFICATION = {
 }
 
 
+def _recover_sid(events, index):
+    event = events[index]
+    candidates = []
+    for j in range(max(0, index - 3), min(len(events), index + 4)):
+        other = events[j]
+        if (j == index or other.plane != event.plane or other.sid_mm is None
+                or not math.isfinite(other.sid_mm) or other.sid_mm <= event.sod_mm):
+            continue
+        if all(a is not None and b is not None and abs(a - b) <= 2
+               for a, b in ((event.primary_deg, other.primary_deg),
+                            (event.secondary_deg, other.secondary_deg))):
+            candidates.append((j, other))
+    before = [e for j, e in candidates if j < index]
+    after = [e for j, e in candidates if j > index]
+    donors = [before[-1], after[0]] if before and after else (
+        before[-2:] if before else after[:2])
+    if len(donors) != 2 or abs(donors[0].sid_mm - donors[1].sid_mm) > 0.1:
+        return None
+    return dict(value_mm=donors[0].sid_mm, original_mm=event.sid_mm,
+                source_event_uids=[e.uid for e in donors],
+                source_values_mm=[e.sid_mm for e in donors],
+                method='agreeing_nearby_events_same_plane')
+
+
 def prepare_events(events, equipment):
-    """Preserve event distances and reject missing or invalid geometry."""
+    """Recover supported SID gaps in research configurations."""
     profile = equipment.raw.get('azurion_profile', {})
     if not profile:
         return tuple(events)
@@ -44,6 +68,7 @@ def prepare_events(events, equipment):
     if not research and not all(profile.get(k) is True for k in
                                 ('fixed_filtration_characterized', 'geometry_characterized', 'calibration_characterized')):
         raise InputError('Azurion: faltan caracterización de filtración fija, geometría o calibración. Consulte python -m skindose_verifier.azurion.')
+    events = tuple(events)
     result = []
     first_table = next((e.table_mm for e in events if e.table_mm is not None), None)
     if profile.get('reference_table_from_first_event'):
@@ -55,14 +80,25 @@ def prepare_events(events, equipment):
         quality = dict(event.quality)
         if profile.get('reference_table_from_first_event'):
             quality['table_reference'] = 'research_reference_first_event_not_clinical_registration'
+        if (research and profile.get('recover_missing_sid', True) is True
+                and (event.sid_mm is None or not math.isfinite(event.sid_mm) or event.sid_mm <= 0)
+                and all(v is not None and math.isfinite(v) and v > 0
+                        for v in (event.sod_mm, event.srp_mm))):
+            recovery = _recover_sid(events, index - 1)
+            if recovery:
+                updates['sid_mm'] = recovery['value_mm']
+                updates['original'] = {**event.original, 'sid_recovery': recovery}
+                quality['sid_mm'] = 'estimated_from_agreeing_nearby_events'
         for name in ('sid_mm', 'sod_mm', 'srp_mm'):
+            if name in updates:
+                continue
             value = getattr(event, name)
             if value is None or not math.isfinite(value) or value <= 0:
                 invalid = ', '.join(f'{key}={getattr(event, key)}' for key in ('sid_mm', 'sod_mm', 'srp_mm')
                                     if getattr(event, key) is None or not math.isfinite(getattr(event, key)) or getattr(event, key) <= 0)
                 raise InputError(
                     f'Azurion: evento {index}/{len(events)} (UID {event.uid}) con distancias inválidas: {invalid}. '
-                    f'Kerma de referencia: {event.ka_r_gy} Gy. No se descarta el evento ni se sustituyen las distancias. '
+                    f'Kerma de referencia: {event.ka_r_gy} Gy. No hay una recuperación admisible para estas distancias. '
                     'Se necesitan distancias válidas del evento para continuar.')
         updates['quality'] = quality
         result.append(replace(event, **updates))
