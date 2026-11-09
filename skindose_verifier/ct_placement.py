@@ -6,6 +6,10 @@ from trimesh import load_mesh
 from .geometry import beam_from_event, table_shift
 
 
+class MissingAnatomicalAnchor(ValueError):
+    """The RDSR target has no matching CT anchor."""
+
+
 def _coded_values(root, concept):
     values = set()
     for item in getattr(root, "ContentSequence", ()):
@@ -30,7 +34,7 @@ def estimate_placement(path, digest, metadata, dicom, events, equipment):
     regions = _coded_values(sr, "target region")
     anchors = metadata.get("anatomical_anchors_ras_mm", {})
     if len(regions) != 1 or not isinstance(anchors, dict) or not regions.issubset(anchors):
-        raise ValueError("Falta un punto anatómico derivado del TC para la región diana del RDSR.")
+        raise MissingAnatomicalAnchor("Falta un punto anatómico derivado del TC para la región diana del RDSR.")
     region = next(iter(regions))
     anchor = np.asarray(anchors[region], dtype=float)
     mesh = load_mesh(path, process=False)
