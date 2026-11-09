@@ -1,13 +1,9 @@
-"""Estimated placement of a Slicer surface using a CT-derived target point."""
+"""Estimated placement of a Slicer surface using anatomical or geometric anchors."""
 import numpy as np
 from pydicom import dcmread
 from trimesh import load_mesh
 
 from .geometry import beam_from_event, table_shift
-
-
-class MissingAnatomicalAnchor(ValueError):
-    """The RDSR target has no matching CT anchor."""
 
 
 def _coded_values(root, concept):
@@ -33,14 +29,15 @@ def estimate_placement(path, digest, metadata, dicom, events, equipment):
         raise ValueError("El RDSR no identifica una postura supina o prona uniforme y el sentido de entrada.")
     regions = _coded_values(sr, "target region")
     anchors = metadata.get("anatomical_anchors_ras_mm", {})
-    if len(regions) != 1 or not isinstance(anchors, dict) or not regions.issubset(anchors):
-        raise MissingAnatomicalAnchor("Falta un punto anatómico derivado del TC para la región diana del RDSR.")
-    region = next(iter(regions))
-    anchor = np.asarray(anchors[region], dtype=float)
+    region = next(iter(regions)) if len(regions) == 1 else None
     mesh = load_mesh(path, process=False)
     bounds = mesh.bounds
-    if anchor.shape != (3,) or not np.isfinite(anchor).all() or bounds is None:
-        raise ValueError("Punto anatómico o superficie inválidos.")
+    if bounds is None or bounds.shape != (2, 3) or not np.isfinite(bounds).all():
+        raise ValueError("La superficie no tiene límites válidos.")
+    has_anchor = region is not None and isinstance(anchors, dict) and region in anchors
+    anchor = np.asarray(anchors[region], dtype=float) if has_anchor else bounds.mean(axis=0)
+    if anchor.shape != (3,) or not np.isfinite(anchor).all():
+        raise ValueError("Punto de anclaje inválido.")
     if np.any(anchor < bounds[0]) or np.any(anchor > bounds[1]):
         raise ValueError("El punto de la región diana queda fuera de los límites del STL.")
     # RAS to left, cranial, anterior for head-first supine.
@@ -51,9 +48,13 @@ def estimate_placement(path, digest, metadata, dicom, events, equipment):
         matrix = np.diag([-1, 1, -1]) @ matrix
     if not events:
         raise ValueError("No hay eventos para establecer la posición de referencia.")
-    event = events[0]
+    for reference_index, event in enumerate(events, 1):
+        beam = beam_from_event(event, equipment)
+        if abs(beam.direction[2]) >= 0.1:
+            break
+    else:
+        raise ValueError("No hay un haz de referencia suficientemente transversal al plano de mesa.")
     shift = table_shift(event, equipment)
-    beam = beam_from_event(event, equipment)
     geometry = equipment.geometry_for(event.plane)
     support_z = float(geometry["table_plane_z_mm"])
     local_anchor = matrix @ anchor
@@ -61,8 +62,6 @@ def estimate_placement(path, digest, metadata, dicom, events, equipment):
     offset_z = support_z - min_z
     room_anchor_z = local_anchor[2] + offset_z + shift[2]
     iso = beam.source_mm + float(event.sod_mm) * beam.direction
-    if abs(beam.direction[2]) < 0.1:
-        raise ValueError("El haz de referencia es casi paralelo a la mesa; el apoyo no fija el anclaje.")
     depth = (room_anchor_z - beam.source_mm[2]) / beam.direction[2]
     if not 0 < depth < float(event.sid_mm):
         raise ValueError("El anclaje estimado queda fuera del tramo entre foco y detector.")
@@ -72,9 +71,11 @@ def estimate_placement(path, digest, metadata, dicom, events, equipment):
                 mesh_origin_mm=offset.tolist(), origin_on_table_mm=[0, 0, 0],
                 tilt_x_deg=0, tilt_y_deg=0), dict(
         target_region=region, anchor_ras_mm=anchor.tolist(),
-        reference_event_index=1, reference_table_shift_mm=shift.tolist(),
+        anchor_source='ct_anatomical' if has_anchor else 'mesh_bounds_center',
+        reference_event_index=reference_index, reference_table_shift_mm=shift.tolist(),
         reference_isocenter_mm=iso.tolist(), posture=next(iter(posture)),
         table_relationship=next(iter(direction)),
         assumptions=["superficie apoyada en el plano de mesa configurado",
-                     "punto diana en el eje central del primer evento",
+                     ("anclaje anatómico en el eje central del evento de referencia" if has_anchor else
+                      "centro geométrico del volumen delimitador en el eje central del evento de referencia"),
                      "paciente fijo respecto a la mesa"])
