@@ -29,12 +29,10 @@ def save_interactive(calculation: Calculation, path: Path) -> None:
     # Dose-zero remains gray. Low positive dose starts in green, then moves
     # through yellow/orange/red to make small-but-real dose easier to see.
     palette_stops = [
-        (0.00, "#2d1b4e"),  # mínima dosis positiva: morado oscuro, no negro
-        (0.22, "#542788"),  # morado
-        (0.45, "#b63679"),  # magenta rojizo
-        (0.68, "#ed6925"),  # naranja rojizo
-        (0.84, "#fca50a"),  # naranja/amarillo
-        (1.00, "#fcffa4"),  # máxima dosis: amarillo claro
+        (0.00, "#2ca25f"),
+        (0.33, "#ffe34d"),
+        (0.67, "#fb8c00"),
+        (1.00, "#d7191c"),
     ]
 
     def hex_to_rgb(color: str) -> np.ndarray:
