@@ -20,12 +20,41 @@ from slicer.ScriptedLoadableModule import (
 )
 
 
-MODULE_VERSION = "1.7.2-reduccion-progresiva"
+MODULE_VERSION = "1.8.0-anclaje-toracico"
 
 import sys
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 from surface_processing import surface_quality, clean_surface, valid_surface, simplify_surface, write_stl_checked
+
+
+def estimate_chest_anchor(hu, ijk_to_ras):
+    """Estimate a bilateral pulmonary midpoint from enclosed low-HU volumes."""
+    hu = np.asarray(hu)
+    affine = np.asarray(ijk_to_ras, dtype=float)
+    if hu.ndim != 3 or affine.shape != (4, 4) or min(hu.shape) < 8:
+        return {}, "volumen no compatible"
+    # Reduce memory and computation for a coarse anatomical reference.
+    labels, count = ndimage.label(hu[::2, ::2, ::2] < -500)
+    if count < 2:
+        return {}, "sin dos regiones aéreas separadas"
+    boundary = set()
+    for axis in range(3):
+        for index in (0, -1):
+            boundary.update(np.unique(np.take(labels, index, axis=axis)))
+    sizes = np.bincount(labels.ravel())
+    voxel_ml = abs(np.linalg.det(affine[:3, :3])) * 8 / 1000
+    ids = sorted((i for i in range(1, count + 1)
+                  if i not in boundary and 200 <= sizes[i] * voxel_ml <= 6000),
+                 key=lambda i: sizes[i], reverse=True)[:2]
+    if len(ids) != 2:
+        return {}, "pulmones bilaterales cerrados no identificados"
+    centers = ndimage.center_of_mass(labels, labels, ids)
+    ras = np.asarray([(affine @ [2*i, 2*j, 2*k, 1])[:3] for k, j, i in centers])
+    dx, dy, dz = np.abs(ras[0] - ras[1])
+    if not (70 <= dx <= 280 and dy < 75 and dz < 90):
+        return {}, "regiones aéreas sin disposición pulmonar bilateral plausible"
+    return {"chest": ras.mean(axis=0).tolist()}, "midpoint_of_bilateral_enclosed_low_HU_regions"
 
 
 class DermaDoseSurface(ScriptedLoadableModule):
@@ -694,6 +723,8 @@ class DermaDoseSurfaceLogic(ScriptedLoadableModuleLogic):
         ct_pose = read_ct_volume(self.volumeNode)
         matrix = vtk.vtkMatrix4x4()
         self.volumeNode.GetIJKToRASMatrix(matrix)
+        affine = [[matrix.GetElement(i, j) for j in range(4)] for i in range(4)]
+        anchors, anchor_method = estimate_chest_anchor(slicer.util.arrayFromVolume(self.volumeNode), affine)
         # Stage in the destination filesystem. Never overwrite an existing file.
         with tempfile.TemporaryDirectory(prefix="dermadose_", dir=str(path.parent)) as folder:
             staged = Path(folder) / "surface.stl"
@@ -702,6 +733,8 @@ class DermaDoseSurfaceLogic(ScriptedLoadableModuleLogic):
                 "schema_version": 5, "module_version": MODULE_VERSION,
                 "patient_position_evidence": {"ct": ct_pose, "rdsr": self.rdsrPose,
                     "registration_established": False, "transform_applied": False},
+                "anatomical_anchors_ras_mm": anchors,
+                "anatomical_anchor_method": anchor_method,
                 "decimation": self.decimation,
                 "surface_definition": "external CT contour, not histological skin",
                 "mesh_file": path.name,
