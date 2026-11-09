@@ -39,14 +39,17 @@ def save_results(calculation: Calculation, directory: str | Path, *, audit: dict
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import Normalize, ListedColormap
+    from matplotlib.colors import Normalize, ListedColormap, LinearSegmentedColormap
     from matplotlib.cm import ScalarMappable
+    dose_palette = LinearSegmentedColormap.from_list(
+        "dermadose", [(0.00, "#2ca25f"), (0.33, "#ffe34d"),
+                      (0.67, "#fb8c00"), (1.00, "#d7191c")])
     if calculation.surface.kind == "mesh":
-        shades = plt.colormaps["inferno"](np.linspace(0, 1, 256))
+        shades = dose_palette(np.linspace(0, 1, 256))
         shades[0] = [.26, .29, .32, 1.]
         palette = ListedColormap(shades)
     else:
-        palette = plt.colormaps["inferno"]
+        palette = dose_palette
     fig, ax = plt.subplots(figsize=(6, 8) if calculation.surface.kind == "mesh" else (10, 5))
     ax.set_title(f"{calculation.summary['quantity']} (INVESTIGACIÓN, SIN VALIDACIÓN CLÍNICA)")
     dose = calculation.total_gy.reshape(calculation.surface.shape)
