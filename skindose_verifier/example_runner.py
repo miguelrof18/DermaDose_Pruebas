@@ -147,24 +147,28 @@ def main(argv=None):
         from .engine import normalize
         normalized = tuple(normalize(event, equipment) for event in prepared)
         if audit['mesh_choice'] == 'patient_stl':
-            from .ct_placement import estimate_placement
+            from .ct_placement import MissingAnatomicalAnchor, estimate_placement
             mesh_path = Path(audit['mesh'])
             destination.mkdir(parents=True, exist_ok=True)
             try:
                 placement, details = estimate_placement(
                     mesh_path, audit['mesh_sha256'], read_json(mesh_path.with_suffix('.json')),
                     Path(audit['rdsr']), normalized, equipment)
+            except MissingAnatomicalAnchor:
+                audit.update(registration_status='not_established',
+                             registration_note='Se usa la colocación configurada para el STL sin anclaje anatómico.')
             except (ValueError, OSError) as exc:
                 audit.update(placement_source='automatic_ct', registration_status='insufficient_information',
                              registration_note=str(exc))
                 (destination/'seleccion_entrada.json').write_text(
                     json.dumps(audit, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
                 raise
-            data['patient'].update(placement)
-            audit.update(placement_source='automatic_ct', registration_status='estimated',
-                         registration_note='Colocación geométrica estimada, sin registro independiente.',
-                         ct_placement=details)
-            equipment = Equipment.from_dict(data, base_directory=Path(audit['source_config']).parent)
+            else:
+                data['patient'].update(placement)
+                audit.update(placement_source='automatic_ct', registration_status='estimated',
+                             registration_note='Colocación geométrica estimada, sin registro independiente.',
+                             ct_placement=details)
+                equipment = Equipment.from_dict(data, base_directory=Path(audit['source_config']).parent)
         for event in normalized:
             equipment.validate_event(event, 'skin_dose')
         audit['table_coordinate_conversions'] = [
