@@ -142,6 +142,25 @@ def main(argv=None):
         prepared = prepare_events(events, equipment)
         from .engine import normalize
         normalized = tuple(normalize(event, equipment) for event in prepared)
+        if audit['mesh_choice'] == 'patient_stl':
+            from .ct_placement import estimate_placement
+            mesh_path = Path(audit['mesh'])
+            destination.mkdir(parents=True, exist_ok=True)
+            try:
+                placement, details = estimate_placement(
+                    mesh_path, audit['mesh_sha256'], read_json(mesh_path.with_suffix('.json')),
+                    Path(audit['rdsr']), normalized, equipment)
+            except (ValueError, OSError) as exc:
+                audit.update(placement_source='automatic_ct', registration_status='insufficient_information',
+                             registration_note=str(exc))
+                (destination/'seleccion_entrada.json').write_text(
+                    json.dumps(audit, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
+                raise
+            data['patient'].update(placement)
+            audit.update(placement_source='automatic_ct', registration_status='estimated',
+                         registration_note='Colocación geométrica estimada, sin registro independiente.',
+                         ct_placement=details)
+            equipment = Equipment.from_dict(data, base_directory=Path(audit['source_config']).parent)
         for event in normalized:
             equipment.validate_event(event, 'skin_dose')
         audit['table_coordinate_conversions'] = [
